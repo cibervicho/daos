@@ -1050,7 +1050,8 @@ static int
 csum_recalc(struct agg_io_context *io, struct bio_sglist *bsgl,
 	    d_sg_list_t *sgl, struct evt_entry_in *ent_in,
 	    struct csum_recalc *recalcs,
-	    unsigned int recalc_seg_cnt, daos_size_t seg_size)
+	    unsigned int recalc_seg_cnt, daos_size_t seg_size, bool is_write,
+	    struct bio_io_context *bio_ctx, d_iov_t *iov)
 {
 	struct csum_recalc_args	args = { 0 };
 
@@ -1062,6 +1063,26 @@ csum_recalc(struct agg_io_context *io, struct bio_sglist *bsgl,
 	args.cra_seg_cnt	= recalc_seg_cnt;
 	args.cra_buf		= io->ic_buf;
 	args.cra_buf_len	= io->ic_buf_len;
+	args.is_write		= is_write;
+	args.iov		= iov;
+	args.bio_ctx		= bio_ctx;
+
+	io->ic_csum_recalc_func(&args);
+	if (args.cra_rc == -DER_CSUM && args.cra_bio_ctxt != NULL)
+		bio_log_csum_err(args.cra_bio_ctxt, args.cra_tgt_id);
+	return args.cra_rc;
+}
+
+static int
+do_write(struct agg_io_context *io, struct bio_io_context *bio_ctx, struct evt_entry_in *ent_in,
+	 d_iov_t *iov)
+{
+	struct csum_recalc_args	args = { 0 };
+
+	args.cra_ent_in		= ent_in;
+	args.is_write		= true;
+	args.iov		= iov;
+	args.bio_ctx		= bio_ctx;
 
 	io->ic_csum_recalc_func(&args);
 	if (args.cra_rc == -DER_CSUM && args.cra_bio_ctxt != NULL)
@@ -1082,7 +1103,7 @@ fill_one_segment(daos_handle_t ih, struct agg_merge_window *mw,
 	struct bio_sglist	 bsgl;
 	d_sg_list_t		 sgl;
 	d_iov_t			 iov;
-	bio_addr_t		 addr_dst, addr_src;
+	bio_addr_t		 addr_dst = {0}, addr_src;
 	daos_size_t		 seg_size, copy_size, buf_max;
 	struct evt_extent	 ext = { 0 };
 	daos_off_t		 phy_lo = 0;
@@ -1216,6 +1237,7 @@ fill_one_segment(daos_handle_t ih, struct agg_merge_window *mw,
 		 * to be placed as a single contiguous range at beginning
 		 * of the buffer.
 		 */
+		D_ASSERTF(0, "Temporarily disabled for DSA experiments\n");
 		rc = csum_append_added_segs(&bsgl, added_csum_segs);
 		if (rc) {
 			D_ERROR("Extend bsgl error: "DF_RC"\n", DP_RC(rc));
@@ -1239,7 +1261,7 @@ fill_one_segment(daos_handle_t ih, struct agg_merge_window *mw,
 	if (mw->mw_csum_support) {
 		/* Verify prior data, calculate csums for output range. */
 		rc = csum_recalc(io, &bsgl, &sgl, ent_in, io->ic_csum_recalcs,
-				 seg_count, seg_size);
+				 seg_count, seg_size, false, NULL, NULL);
 		if (rc) {
 			D_ERROR("CSUM verify error: "DF_RC"\n", DP_RC(rc));
 			goto out;
@@ -1264,7 +1286,13 @@ fill_one_segment(daos_handle_t ih, struct agg_merge_window *mw,
 	iov.iov_buf = io->ic_buf;
 	iov.iov_buf_len = io->ic_buf_len;
 	iov.iov_len = seg_size;
-	rc = bio_write(bio_ctxt, addr_dst, &iov);
+
+	if (mw->mw_csum_support) {
+		rc = csum_recalc(io, &bsgl, &sgl, ent_in, io->ic_csum_recalcs,
+				 seg_count, seg_size, true, bio_ctxt, &iov);
+	} else {
+		rc = do_write(io, bio_ctxt, ent_in, &iov);
+	}
 	if (rc)
 		D_ERROR("Write "DF_RECT" error: "DF_RC"\n",
 			DP_RECT(&ent_in->ei_rect), DP_RC(rc));
