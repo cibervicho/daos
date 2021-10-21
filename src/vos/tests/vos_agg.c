@@ -76,34 +76,45 @@ void submit_io(void *arg)
 	D_ASSERT(rc == 0);
 }
 
+static d_list_t head;
+
+struct job_entry {
+	d_list_t	link;
+	dml_job_t	job_ptr[0];
+};
+
 static dml_job_t *
 init_dml_job(void)
 {
-	dml_job_t	*dml_job_ptr = NULL;
+	struct job_entry *job = NULL;
 	uint32_t	size = 0;
 	dml_status_t	status = dml_get_job_size(path, &size);
 	if (status != DML_STATUS_OK)
 		return NULL;
 
-	dml_job_ptr = (dml_job_t *)malloc(size);
-	status = dml_init_job(path, dml_job_ptr);
+	job = malloc(sizeof(struct job_entry) + size);
+	status = dml_init_job(path, &job->job_ptr[0]);
 	if (status != DML_STATUS_OK) {
-		free(dml_job_ptr);
+		free(job);
 		return NULL;
 	}
 
-	return dml_job_ptr;
+	d_list_add_tail(&job->link, &head);
+	return &job->job_ptr[0];
 }
 
-int
+void
 handle_write(struct csum_recalc_args *args)
 {
 	dml_job_t	*job_ptr = init_dml_job();
 	dml_status_t	status;
-	int		rc = 0;
 
-	if (job_ptr == NULL)
-		return -DER_NOMEM;
+	args->cra_rc = 0;
+
+	if (job_ptr == NULL) {
+		args->cra_rc = -DER_NOMEM;
+		return;
+	}
 
 	job_ptr->operation = DML_OP_MEM_MOVE;
 	job_ptr->source_first_ptr = args->iov->iov_buf;
@@ -111,29 +122,8 @@ handle_write(struct csum_recalc_args *args)
 	job_ptr->destination_first_ptr = bio_addr2ptr(args->bio_ctx, args->cra_ent_in->ei_addr);
 
 	status = dml_submit_job(job_ptr);
-	if (status != DML_STATUS_OK) {
-		rc = -DER_INVAL;
-		goto out;
-	}
-
-	for (;;) {
-		status = dml_check_job(job_ptr);
-		if (status == DML_STATUS_OK)
-			break;
-
-		if (status == DML_STATUS_JOB_CORRUPTED) {
-			rc = -DER_INVAL;
-			break;
-		}
-
-		/** Let another ULT execute */
-		ABT_thread_yield();
-	}
-
-out:
-	dml_finalize_job(job_ptr);
-	ABT_eventual_set(args->csum_eventual, NULL, 0);
-	return rc;
+	if (status != DML_STATUS_OK)
+		args->cra_rc = -DER_INVAL;
 }
 
 int
@@ -259,12 +249,41 @@ agg_csum_recalc(void *recalc_args)
 		if (gen_csum)
 			rc = handle_write_csum(args);
 		else
-			rc = handle_write(args);
+			D_ASSERT(0);
 	} else {
 		rc = handle_csum(args);
 	}
 
 	args->cra_rc = rc;
+}
+
+int wait_ops(int rc)
+{
+	struct job_entry	*job;
+	dml_status_t	status;
+
+	while ((job = d_list_pop_entry(&head, struct job_entry, link)) != NULL) {
+		for (;;) {
+			status = dml_check_job(job->job_ptr);
+
+			if (status == DML_STATUS_OK)
+				break;
+
+			if (status == DML_STATUS_JOB_CORRUPTED) {
+				if (rc == 0)
+					rc = -DER_INVAL;
+				break;
+			}
+
+			/** Let the I/O go */
+			ABT_thread_yield();
+		}
+
+		dml_finalize_job(job->job_ptr);
+		free(job);
+	}
+
+	return rc;
 }
 
 void
@@ -278,6 +297,11 @@ csum_recalc(void *args)
 	if (!use_dsa && cs_args->is_write) {
 		rc = bio_write(cs_args->bio_ctx, cs_args->cra_ent_in->ei_addr, cs_args->iov);
 		cs_args->cra_rc = rc;
+		return;
+	}
+
+	if (use_dsa && cs_args->is_write && !gen_csum) {
+		handle_write(args);
 		return;
 	}
 
@@ -298,9 +322,12 @@ void agg_thread(void *arg)
 	struct agg_info *agg_info = arg;
 	uint64_t	start, end;
 
+	D_INIT_LIST_HEAD(&head);
+
 
 	start = daos_get_ntime();
-	agg_info->rc = vos_aggregate(vtx.tc_co_hdl, &agg_info->epr, csum_recalc, NULL, NULL, true);
+	agg_info->rc = vos_aggregate(vtx.tc_co_hdl, &agg_info->epr, csum_recalc, wait_ops, NULL,
+				     NULL, true);
 	end = daos_get_ntime();
 	agg_info->time_nsec = end - start;
 }

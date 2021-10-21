@@ -116,6 +116,7 @@ struct agg_io_context {
 	/* Reserved NVMe extents for new physical entries */
 	d_list_t		 ic_nvme_exts;
 	void			 (*ic_csum_recalc_func)(void *);
+	int			 (*ic_wait_func)(int);
 };
 
 /* Merge window for evtree aggregation */
@@ -1352,6 +1353,9 @@ fill_segments(daos_handle_t ih, struct agg_merge_window *mw,
 		}
 	}
 
+	if (io->ic_wait_func)
+		io->ic_wait_func(rc);
+
 	return rc;
 }
 
@@ -2485,7 +2489,7 @@ aggregate_exit(struct vos_container *cont, int agg_mode)
 }
 
 static void
-merge_window_init(struct agg_merge_window *mw, void (*func)(void *))
+merge_window_init(struct agg_merge_window *mw, void (*func)(void *), void (*wait_func)(int))
 {
 	struct agg_io_context *io = &mw->mw_io_ctxt;
 
@@ -2495,6 +2499,7 @@ merge_window_init(struct agg_merge_window *mw, void (*func)(void *))
 	D_INIT_LIST_HEAD(&mw->mw_rmv_ents);
 	D_INIT_LIST_HEAD(&io->ic_nvme_exts);
 	io->ic_csum_recalc_func = func;
+	io->ic_wait_func = wait_func;
 }
 
 struct agg_data {
@@ -2505,7 +2510,7 @@ struct agg_data {
 
 int
 vos_aggregate(daos_handle_t coh, daos_epoch_range_t *epr,
-	      void (*csum_func)(void *),
+	      void (*csum_func)(void *), int (*wait_func)(int),
 	      bool (*yield_func)(void *arg), void *yield_arg, bool full_scan)
 {
 	struct vos_container	*cont = vos_hdl2cont(coh);
@@ -2545,7 +2550,7 @@ vos_aggregate(daos_handle_t coh, daos_epoch_range_t *epr,
 	ad->ad_agg_param.ap_discard = 0;
 	ad->ad_agg_param.ap_yield_func = yield_func;
 	ad->ad_agg_param.ap_yield_arg = yield_arg;
-	merge_window_init(&ad->ad_agg_param.ap_window, csum_func);
+	merge_window_init(&ad->ad_agg_param.ap_window, csum_func, wait_func);
 	/* A full scan caused by snapshot deletion */
 	ad->ad_agg_param.ap_full_scan = full_scan;
 
