@@ -15,9 +15,9 @@
 #include "vts_io.h"
 
 #define DEFAULT_NUM_XSTREAMS 3
-#define MIN_OPS (1100)
+#define MIN_OPS (5000)
 #define OFFSET	(1024 * 64)
-#define BUF_SIZE (1024 * 128)
+#define BUF_SIZE (1024 * 1024)
 
 enum {
 	NO_DSA_NO_CSUM,
@@ -100,19 +100,15 @@ handle_write(struct csum_recalc_args *args)
 {
 	dml_job_t	*job_ptr = init_dml_job();
 	dml_status_t	status;
-	char		*src, *dest;
 	int		rc = 0;
-	printf("handle write\n");
 
 	if (job_ptr == NULL)
 		return -DER_NOMEM;
 
 	job_ptr->operation = DML_OP_MEM_MOVE;
 	job_ptr->source_first_ptr = args->iov->iov_buf;
-	src = (char *)job_ptr->source_first_ptr;
 	job_ptr->destination_length = job_ptr->source_length = args->iov->iov_len;
 	job_ptr->destination_first_ptr = bio_addr2ptr(args->bio_ctx, args->cra_ent_in->ei_addr);
-	dest = (char *)job_ptr->destination_first_ptr;
 
 	status = dml_submit_job(job_ptr);
 	if (status != DML_STATUS_OK) {
@@ -135,9 +131,6 @@ handle_write(struct csum_recalc_args *args)
 	}
 
 out:
-	printf("src[0] = %c dest[0] = %c memcmp = %d bytes="DF_U64"\n", src[0], dest[0],
-	       memcmp(src, dest, args->iov->iov_len), args->iov->iov_len);
-
 	dml_finalize_job(job_ptr);
 	ABT_eventual_set(args->csum_eventual, NULL, 0);
 	return rc;
@@ -147,7 +140,6 @@ int
 handle_write_csum(struct csum_recalc_args *args)
 {
 	dml_job_t	*job_ptr = init_dml_job();
-	printf("handle write csum\n");
 
 	if (job_ptr == NULL)
 		return -DER_NOMEM;
@@ -162,8 +154,6 @@ int
 handle_csum(struct csum_recalc_args *args)
 {
 	dml_job_t	*job_ptr = init_dml_job();
-
-	printf("handle csum\n");
 
 	if (job_ptr == NULL)
 		return -DER_NOMEM;
@@ -261,7 +251,6 @@ agg_csum_recalc(void *recalc_args)
 	int rc;
 
 	if (!use_dsa) {
-		printf("recalc called\n");
 		ds_csum_agg_recalc(recalc_args);
 		return;
 	}
@@ -287,7 +276,6 @@ csum_recalc(void *args)
 	int rc;
 
 	if (!use_dsa && cs_args->is_write) {
-		printf("bio_write called\n");
 		rc = bio_write(cs_args->bio_ctx, cs_args->cra_ent_in->ei_addr, cs_args->iov);
 		cs_args->cra_rc = rc;
 		return;
@@ -299,24 +287,22 @@ csum_recalc(void *args)
 	ABT_eventual_free(&cs_args->csum_eventual);
 }
 
+struct agg_info {
+	daos_epoch_range_t epr;
+	uint64_t time_nsec;
+	int rc;
+};
+
 void agg_thread(void *arg)
 {
-	int *done = arg;
-	daos_epoch_range_t	epr = {0};
-	int rc;
+	struct agg_info *agg_info = arg;
+	uint64_t	start, end;
 
-	while (!done || new_io != 0) {
-		if (epr.epr_hi == highest_io && new_io == 0) {
-			ABT_thread_yield();
-			continue;
-		}
 
-		new_io = 0;
-		epr.epr_lo = 0;
-		epr.epr_hi = highest_io;
-		rc = vos_aggregate(vtx.tc_co_hdl, &epr, csum_recalc, NULL, NULL, true);
-		D_ASSERT(rc == 0);
-	}
+	start = daos_get_ntime();
+	agg_info->rc = vos_aggregate(vtx.tc_co_hdl, &agg_info->epr, csum_recalc, NULL, NULL, true);
+	end = daos_get_ntime();
+	agg_info->time_nsec = end - start;
 }
 
 struct io_op *
@@ -357,9 +343,11 @@ void run_bench(int num_init, int num_ops)
 	int         i;
 	ABT_pool    target_pool = pools[1];
 	ABT_thread *children    = malloc(sizeof(*children) * (num_ops + 1));
+	struct agg_info	 agg_info = {0};
 	struct io_op	*args;
 	int		rc;
-	int		done = 0;
+	uint64_t	start, end;
+	double bw;
 
 	oid = dts_unit_oid_gen(0, DAOS_OF_DKEY_UINT64, 0);
 
@@ -379,18 +367,32 @@ void run_bench(int num_init, int num_ops)
 		ABT_thread_free(&children[i]);
 	}
 
-	ABT_thread_create(target_pool, agg_thread, &done, ABT_THREAD_ATTR_NULL,
+	agg_info.epr.epr_lo = 0;
+	agg_info.epr.epr_hi = highest_io;
+
+	start = daos_get_ntime();
+	ABT_thread_create(target_pool, agg_thread, &agg_info, ABT_THREAD_ATTR_NULL,
 			  &children[num_ops]);
+
 	for (i = num_init; i < num_ops; i++) {
 		ABT_thread_create(target_pool, submit_io, &args[i], ABT_THREAD_ATTR_NULL,
 				  &children[i]);
 	}
 
+	end = start;
 	for (i = num_init; i < num_ops + 1; i++) {
 		if (i == num_ops)
-			done = 1; /** Nothing left but to wait for agg thread to finish */
+			end = daos_get_ntime();
 		ABT_thread_free(&children[i]);
 	}
+
+	bw = ((double)num_init * BUF_SIZE * NSEC_PER_SEC) / ((1024 * 1024) * agg_info.time_nsec);
+	printf("agg_time = %10.3lf ms, BW %10.5lf MB/s\n",
+	       (double)agg_info.time_nsec / NSEC_PER_MSEC, bw);
+	bw = ((double)(num_ops - num_init) * BUF_SIZE * NSEC_PER_SEC) /
+		(1024 * 1024 * (end - start));
+	printf("io_time  = %10.3lf ms, BW %10.5lf MB/s\n", (double)(end - start) / NSEC_PER_MSEC,
+	       bw);
 
 	if (gen_csum) {
 		daos_csummer_destroy(&csummer);

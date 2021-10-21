@@ -285,7 +285,7 @@ def define_components(reqs):
                 libs=["dml"],
                 headers=['dml.h'],
                 out_of_src_build=True,
-                extra_include_path=['include/dml/include'])
+                extra_include_path=['include/dml'])
 
     retriever = GitRepoRetriever("https://github.com/pmem/pmdk.git")
 
