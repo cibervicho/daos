@@ -2489,7 +2489,7 @@ aggregate_exit(struct vos_container *cont, int agg_mode)
 }
 
 static void
-merge_window_init(struct agg_merge_window *mw, void (*func)(void *), void (*wait_func)(int))
+merge_window_init(struct agg_merge_window *mw, void (*func)(void *), int (*wait_func)(int))
 {
 	struct agg_io_context *io = &mw->mw_io_ctxt;
 
