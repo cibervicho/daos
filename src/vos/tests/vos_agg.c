@@ -5,6 +5,10 @@
  */
 #define D_LOGFAC DD_FAC(tests)
 
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <malloc.h>
+#include <sys/mman.h>
 #include <abt.h>
 #include <assert.h>
 #include <stdarg.h>
@@ -15,9 +19,9 @@
 #include "vts_io.h"
 
 #define DEFAULT_NUM_XSTREAMS 3
-#define MIN_OPS (5000)
+#define MIN_OPS (40000)
 #define OFFSET	(1024 * 64)
-#define BUF_SIZE (1024 * 1024)
+#define BUF_SIZE (1024 * 128)
 
 enum {
 	NO_DSA_NO_CSUM,
@@ -76,80 +80,176 @@ void submit_io(void *arg)
 	D_ASSERT(rc == 0);
 }
 
+void pin_thread(void *arg)
+{
+	pthread_t	thread;
+	cpu_set_t	cpuset;
+	uintptr_t	cpu = (uintptr_t)arg;
+	int rc;
+
+	CPU_ZERO(&cpuset);
+	CPU_SET(cpu, &cpuset);
+	thread = pthread_self();
+	rc = pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset);
+	D_ASSERT(rc == 0);
+}
+
 static d_list_t head;
+static d_list_t batch_jobs;
+#define BATCH_SIZE 8
 
 struct job_entry {
 	d_list_t	link;
+	d_iov_t		*iovs;
+	void 		*batch_ptr;
 	dml_job_t	job_ptr[0];
 };
 
-static dml_job_t *
-init_dml_job(void)
+static int
+init_batch_job(void)
 {
 	struct job_entry *job = NULL;
 	uint32_t	size = 0;
 	dml_status_t	status = dml_get_job_size(path, &size);
 	if (status != DML_STATUS_OK)
-		return NULL;
+		return -DER_NOMEM;
 
-	job = malloc(sizeof(struct job_entry) + size);
+	job = malloc(sizeof(*job) + size + BATCH_SIZE * sizeof(job->iovs[0]));
 	status = dml_init_job(path, &job->job_ptr[0]);
 	if (status != DML_STATUS_OK) {
 		free(job);
-		return NULL;
+		return -DER_NOMEM;
 	}
 
-	d_list_add_tail(&job->link, &head);
-	return &job->job_ptr[0];
+	job->iovs = (d_iov_t *)((char *)job + size);
+	status = dml_get_batch_size(&job->job_ptr[0], BATCH_SIZE, &size);
+	if (status != DML_STATUS_OK) {
+		dml_finalize_job(&job->job_ptr[0]);
+		free(job);
+		return -DER_NOMEM;
+	}
+
+	job->batch_ptr = malloc(size);
+	job->job_ptr->operation = DML_OP_BATCH;
+	job->job_ptr->destination_first_ptr = job->batch_ptr;
+	job->job_ptr->destination_length = size;
+
+	d_list_add_tail(&job->link, &batch_jobs);
+	return 0;
+}
+
+static void
+init_jobs(void)
+{
+	int rc, i;
+
+	D_INIT_LIST_HEAD(&head);
+	D_INIT_LIST_HEAD(&batch_jobs);
+
+	for (i = 0; i < 32; i++) {
+		rc = init_batch_job();
+		D_ASSERT(rc == 0);
+	}
+}
+
+static void
+finalize_jobs(void)
+{
+	struct job_entry	*job;
+
+	while ((job = d_list_pop_entry(&batch_jobs, struct job_entry, link)) != NULL) {
+		dml_finalize_job(&job->job_ptr[0]);
+		free(job->batch_ptr);
+		free(job);
+	}
+}
+
+void
+handle_dsa_batch_write(struct csum_recalc_args *args, char **dest, int index, int count)
+{
+	struct bio_sglist	*bsgl = args->cra_bsgl;
+	struct job_entry	*job;
+	dml_job_t		*job_ptr;
+	dml_status_t		 status;
+	int			 i;
+
+	job = d_list_pop_entry(&batch_jobs, struct job_entry, link);
+	D_ASSERT(job != NULL);
+
+	args->cra_rc = 0;
+
+	job_ptr = job->job_ptr;
+
+	for (i = index; i < index + count; i++) {
+		struct bio_iov	*biov = &bsgl->bs_iovs[i];
+		int batch_idx = i - index;
+		d_iov_t	 src;
+		d_iov_t *iov = &job->iovs[batch_idx];
+		iov->iov_buf = *dest;
+		iov->iov_len = iov->iov_buf_len = src.iov_len = src.iov_buf_len = biov->bi_data_len;
+		src.iov_buf = bio_addr2ptr(args->bio_ctx, biov->bi_addr);
+		*dest += src.iov_len;
+
+		status = dml_batch_set_mem_move_by_index(job_ptr, batch_idx, src.iov_buf, iov->iov_buf, iov->iov_len, 0u);
+		if (status != DML_STATUS_OK)
+			goto pop;
+	}
+	for (i = count; i < BATCH_SIZE; i++) {
+		status = dml_batch_set_nop_by_index(job_ptr, i, 0u);
+		if (status != DML_STATUS_OK)
+			goto pop;
+	}
+
+	status = dml_submit_job(job_ptr);
+	if (status == DML_STATUS_OK) {
+		d_list_add_tail(&job->link, &head);
+		return;
+	}
+pop:
+	args->cra_rc = -DER_INVAL;
+	d_list_add(&job->link, &batch_jobs);
+}
+
+void
+handle_dsa_write(struct csum_recalc_args *args)
+{
+	struct bio_sglist	*bsgl = args->cra_bsgl;
+	char *dest;
+	int count, i;
+
+	dest = bio_addr2ptr(args->bio_ctx, args->cra_ent_in->ei_addr);
+
+	for (i = 0; i < bsgl->bs_nr; i += BATCH_SIZE) {
+		count = MIN(BATCH_SIZE, bsgl->bs_nr - i);
+		handle_dsa_batch_write(args, &dest, i, count);
+		if (args->cra_rc != 0)
+			break;
+	}
+}
+
+void
+handle_copy(struct csum_recalc_args *args)
+{
 }
 
 void
 handle_write(struct csum_recalc_args *args)
 {
-	dml_job_t	*job_ptr = init_dml_job();
-	dml_status_t	status;
-
-	args->cra_rc = 0;
-
-	if (job_ptr == NULL) {
-		args->cra_rc = -DER_NOMEM;
-		return;
-	}
-
-	job_ptr->operation = DML_OP_MEM_MOVE;
-	job_ptr->source_first_ptr = args->iov->iov_buf;
-	job_ptr->destination_length = job_ptr->source_length = args->iov->iov_len;
-	job_ptr->destination_first_ptr = bio_addr2ptr(args->bio_ctx, args->cra_ent_in->ei_addr);
-
-	status = dml_submit_job(job_ptr);
-	if (status != DML_STATUS_OK)
-		args->cra_rc = -DER_INVAL;
+	if (use_dsa)
+		handle_dsa_write(args);
+	else
+		handle_copy(args);
 }
 
 int
 handle_write_csum(struct csum_recalc_args *args)
 {
-	dml_job_t	*job_ptr = init_dml_job();
-
-	if (job_ptr == NULL)
-		return -DER_NOMEM;
-
-	dml_finalize_job(job_ptr);
-	ABT_eventual_set(args->csum_eventual, NULL, 0);
-
 	return 0;
 }
 
 int
 handle_csum(struct csum_recalc_args *args)
 {
-	dml_job_t	*job_ptr = init_dml_job();
-
-	if (job_ptr == NULL)
-		return -DER_NOMEM;
-
-	dml_finalize_job(job_ptr);
-	ABT_eventual_set(args->csum_eventual, NULL, 0);
 	return 0;
 
 #if 0
@@ -279,8 +379,7 @@ int wait_ops(int rc)
 			ABT_thread_yield();
 		}
 
-		dml_finalize_job(job->job_ptr);
-		free(job);
+		d_list_add_tail(&job->link, &batch_jobs);
 	}
 
 	return rc;
@@ -292,15 +391,8 @@ csum_recalc(void *args)
 	struct csum_recalc_args *cs_args = args;
 	ABT_pool	target_pool = pools[2];
 	ABT_thread	thread;
-	int rc;
 
-	if (!use_dsa && cs_args->is_write) {
-		rc = bio_write(cs_args->bio_ctx, cs_args->cra_ent_in->ei_addr, cs_args->iov);
-		cs_args->cra_rc = rc;
-		return;
-	}
-
-	if (use_dsa && cs_args->is_write && !gen_csum) {
+	if (cs_args->is_write && !gen_csum) {
 		handle_write(args);
 		return;
 	}
@@ -322,7 +414,7 @@ void agg_thread(void *arg)
 	struct agg_info *agg_info = arg;
 	uint64_t	start, end;
 
-	D_INIT_LIST_HEAD(&head);
+	init_jobs();
 
 
 	start = daos_get_ntime();
@@ -330,6 +422,8 @@ void agg_thread(void *arg)
 				     NULL, true);
 	end = daos_get_ntime();
 	agg_info->time_nsec = end - start;
+
+	finalize_jobs();
 }
 
 struct io_op *
@@ -363,6 +457,19 @@ allocate_ops(int op_count, bool csum)
 	}
 
 	return ops;
+}
+
+void
+pin_threads(void)
+{
+	ABT_thread	 child;
+	int		 i;
+
+	pin_thread((void *)(uintptr_t)0);
+	for (i = 1; i < DEFAULT_NUM_XSTREAMS; i++) {
+		ABT_thread_create(pools[i], pin_thread, (void *)(uintptr_t)i, ABT_THREAD_ATTR_NULL, &child);
+		ABT_thread_free(&child);
+	}
 }
 
 void run_bench(int num_init, int num_ops)
@@ -431,18 +538,66 @@ print_usage(const char *name)
 {
 	printf("Usage: %s [opts]\n", name);
 	printf("\t-h            Print help and exit\n");
-	printf("\t-n count      Set number of operations to perform\n");
+	printf("\t-o count      Set number of operations to perform\n");
 	printf("\t-t d|D|n|N    Aggregation with(d) or without DSA(d), capitalize for csum, default is 'n'\n");
+	printf("\t-r ratio      Integer between 1 and 100 indicating percentage of total writes to aggregate\n");
 	printf("\t-p s|h	s is software DSA, h is hardware DSA\n");
 }
 
+/* Workaround for CART-890 */
+static void
+mem_pin_workaround(void)
+{
+        struct rlimit   rlim;
+        int             rc = 0;
+
+        /* Note: mallopt() returns 1 on success */
+        /* Prevent malloc from releasing memory via sbrk syscall */
+        rc = mallopt(M_TRIM_THRESHOLD, -1);
+        if (rc != 1)
+                D_WARN("Failed to disable malloc trim: %d\n", errno);
+
+        /* Disable fastbins; this option is not available on all systems */
+        rc = mallopt(M_MXFAST, 0); 
+        if (rc != 1)
+                D_WARN("Failed to disable malloc fastbins: %d (%s)\n",
+                       errno, strerror(errno));
+
+        rc = getrlimit(RLIMIT_MEMLOCK, &rlim);
+        if (rc != 0) {
+                D_WARN("getrlimit() failed; errno=%d (%s)\n",
+                       errno, strerror(errno));
+                goto exit;
+        }   
+
+        if (rlim.rlim_cur == RLIM_INFINITY &&
+            rlim.rlim_max == RLIM_INFINITY) {
+                D_INFO("Infinite rlimit detected; performing mlockall()\n");
+
+                /* Lock all pages */
+                rc = mlockall(MCL_CURRENT | MCL_FUTURE);
+                if (rc)
+                        D_WARN("Failed to mlockall(); errno=%d (%s)\n",
+                               errno, strerror(errno));
+
+        } else {
+                D_INFO("mlockall() skipped\n");
+        }   
+
+        D_DEBUG(DB_ALL, "Memory pinning workaround enabled\n");
+exit:
+        return;
+}
+
+
 int main(int argc, char **argv)
 {
-	int i, rc, num_ops = 0, num_init;
+	int i, rc, num_ops = 0, num_init, ratio = 22;
 	/* Read arguments. */
 	int num_xstreams = DEFAULT_NUM_XSTREAMS;
+
 	while (1) {
-		int opt = getopt(argc, argv, "hn:t:p:");
+		int opt = getopt(argc, argv, "hr:o:t:p:");
 		if (opt == -1)
 			break;
 		switch (opt) {
@@ -461,6 +616,9 @@ int main(int argc, char **argv)
 			break;
 		case 'o':
 			num_ops = atoi(optarg);
+			break;
+		case 'r':
+			ratio = atoi(optarg);
 			break;
 		case 't':
 			switch (optarg[0]) {
@@ -487,16 +645,22 @@ int main(int argc, char **argv)
 		}
 	}
 
+	if (ratio < 0)
+		ratio = 5;
+	else if (ratio > 90)
+		ratio = 90;
+
 	if (num_ops < MIN_OPS)
 		num_ops = MIN_OPS;
 
-	num_init = num_ops / 11;
+	num_init = num_ops * ratio / 100;
 
 	rc = daos_debug_init(DAOS_LOG_DEFAULT);
 	if (rc) {
 		print_error("Error initializing debug system\n");
 		return rc;
 	}
+	mem_pin_workaround();
 
 	rc = vos_self_init("/mnt/daos");
 	if (rc) {
@@ -533,6 +697,7 @@ int main(int argc, char **argv)
 		ABT_xstream_create(scheds[i], &xstreams[i]);
 	}
 
+	pin_threads();
 	run_bench(num_init, num_ops);
 
 	/* Join secondary execution streams. */

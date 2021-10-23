@@ -1076,13 +1076,13 @@ csum_recalc(struct agg_io_context *io, struct bio_sglist *bsgl,
 
 static int
 do_write(struct agg_io_context *io, struct bio_io_context *bio_ctx, struct evt_entry_in *ent_in,
-	 d_iov_t *iov)
+	 struct bio_sglist *bsgl)
 {
 	struct csum_recalc_args	args = { 0 };
 
 	args.cra_ent_in		= ent_in;
 	args.is_write		= true;
-	args.iov		= iov;
+	args.cra_bsgl		= bsgl;
 	args.bio_ctx		= bio_ctx;
 
 	io->ic_csum_recalc_func(&args);
@@ -1246,20 +1246,20 @@ fill_one_segment(daos_handle_t ih, struct agg_merge_window *mw,
 		}
 	}
 
-	iov.iov_buf = io->ic_buf;
-	iov.iov_len = 0;
-	iov.iov_buf_len = io->ic_buf_len;
-	sgl.sg_nr = 1;
-	sgl.sg_iovs = &iov;
-	rc = bio_readv(bio_ctxt, &bsgl, &sgl);
-	if (rc) {
-		D_ERROR("Readv for "DF_RECT" error: "DF_RC"\n",
-			DP_RECT(&ent_in->ei_rect), DP_RC(rc));
-		goto out;
-	}
-	D_ASSERT(iov.iov_len == seg_size + buf_add);
-
 	if (mw->mw_csum_support) {
+		iov.iov_buf = io->ic_buf;
+		iov.iov_len = 0;
+		iov.iov_buf_len = io->ic_buf_len;
+		sgl.sg_nr = 1;
+		sgl.sg_iovs = &iov;
+		rc = bio_readv(bio_ctxt, &bsgl, &sgl);
+		if (rc) {
+			D_ERROR("Readv for "DF_RECT" error: "DF_RC"\n",
+				DP_RECT(&ent_in->ei_rect), DP_RC(rc));
+			goto out;
+		}
+		D_ASSERT(iov.iov_len == seg_size + buf_add);
+
 		/* Verify prior data, calculate csums for output range. */
 		rc = csum_recalc(io, &bsgl, &sgl, ent_in, io->ic_csum_recalcs,
 				 seg_count, seg_size, false, NULL, NULL);
@@ -1284,15 +1284,16 @@ fill_one_segment(daos_handle_t ih, struct agg_merge_window *mw,
 	addr_dst = ent_in->ei_addr;
 	D_ASSERT(!bio_addr_is_hole(&addr_dst));
 
-	iov.iov_buf = io->ic_buf;
-	iov.iov_buf_len = io->ic_buf_len;
-	iov.iov_len = seg_size;
-
 	if (mw->mw_csum_support) {
+
+		iov.iov_buf = io->ic_buf;
+		iov.iov_buf_len = io->ic_buf_len;
+		iov.iov_len = seg_size;
+
 		rc = csum_recalc(io, &bsgl, &sgl, ent_in, io->ic_csum_recalcs,
 				 seg_count, seg_size, true, bio_ctxt, &iov);
 	} else {
-		rc = do_write(io, bio_ctxt, ent_in, &iov);
+		rc = do_write(io, bio_ctxt, ent_in, &bsgl);
 	}
 	if (rc)
 		D_ERROR("Write "DF_RECT" error: "DF_RC"\n",
