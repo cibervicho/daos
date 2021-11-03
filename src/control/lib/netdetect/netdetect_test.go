@@ -116,7 +116,7 @@ func TestParseTopology(t *testing.T) {
 			ndc.deviceScanCfg.targetDevice = tc.netDev
 			AssertEqual(t, err, nil, "Failed to initDeviceScan")
 
-			deviceAffinity, err := GetAffinityForDevice(ndc.deviceScanCfg)
+			deviceAffinity, err := getAffinityForDevice(ndc.deviceScanCfg)
 			AssertEqual(t, err, nil, "Failed to GetAffinityForDevice")
 
 			AssertEqual(t, deviceAffinity.DeviceName, tc.expected.DeviceName,
@@ -198,10 +198,10 @@ func TestValidateNetworkConfig(t *testing.T) {
 	}
 
 	for _, sf := range results {
-		err := ValidateProviderConfig(netCtx, sf.DeviceName, sf.Provider)
+		err := validateProviderConfig(netCtx, sf.DeviceName, sf.Provider)
 		AssertEqual(t, err, nil, "Network device configuration is invalid - provider not supported")
 
-		err = ValidateNUMAConfig(netCtx, sf.DeviceName, sf.NUMANode)
+		err = validateNUMAConfig(netCtx, sf.DeviceName, sf.NUMANode)
 		AssertEqual(t, err, nil, "Network device configuration is invalid - NUMA node does not match")
 	}
 }
@@ -291,7 +291,7 @@ func TestGetAffinityForDeviceEdgeCases(t *testing.T) {
 			AssertEqual(t, err, nil, "Failed to retrieve context")
 
 			ndc.deviceScanCfg.targetDevice = tc.device
-			deviceAffinity, err := GetAffinityForDevice(ndc.deviceScanCfg)
+			deviceAffinity, err := getAffinityForDevice(ndc.deviceScanCfg)
 
 			AssertEqual(t, err, nil, "Unexpected error on GetAffinityForDevice")
 			AssertEqual(t, deviceAffinity.NUMANode, uint(0), "deviceAffinity mismatch on NUMA node")
@@ -457,7 +457,7 @@ func TestValidateProviderSm(t *testing.T) {
 	}
 
 	for _, sf := range results {
-		err := ValidateProviderConfig(netCtx, sf.DeviceName, "sm")
+		err := validateProviderConfig(netCtx, sf.DeviceName, "sm")
 		AssertEqual(t, err, nil, "Network device configuration is invalid - provider not supported")
 	}
 }
