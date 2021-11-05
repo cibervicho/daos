@@ -179,8 +179,21 @@ cont_free_internal(struct vos_container *cont)
 
 	if (daos_handle_is_valid(cont->vc_dtx_active_hdl))
 		dbtree_destroy(cont->vc_dtx_active_hdl, NULL);
-	if (daos_handle_is_valid(cont->vc_dtx_committed_hdl))
+	if (daos_handle_is_valid(cont->vc_dtx_committed_hdl)) {
+		struct vos_pool	*pool = cont->vc_pool;
+		uint32_t	c_cnt = cont->vc_dtx_committed_count;
+		uint32_t	p_cnt = pool->vp_dtx_committed_count;
+
 		dbtree_destroy(cont->vc_dtx_committed_hdl, NULL);
+
+		D_ASSERTF(cont->vc_dtx_committed_count == 0,
+			  "Cont "DF_UUID" leak CMT DTX entries (1): %u/%u\n",
+			  DP_UUID(cont->vc_id), cont->vc_dtx_committed_count, c_cnt);
+
+		D_ASSERTF(pool->vp_dtx_committed_count = p_cnt - c_cnt,
+			  "Cont "DF_UUID" leak CMT DTX entries (2): %u/%u/%u\n",
+			  DP_UUID(cont->vc_id), pool->vp_dtx_committed_count, p_cnt, c_cnt);
+	}
 
 	if (cont->vc_dtx_array)
 		lrua_array_free(cont->vc_dtx_array);
