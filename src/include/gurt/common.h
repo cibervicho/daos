@@ -75,7 +75,7 @@ char *d_realpath(const char *path, char *resolved_path);
 
 #define DAOS_DM_MODE	1	/* enable debug-memory mode */
 
-#define DAOS_DM_INTV	600	/* dump memory log every 600 seconds */
+#define DAOS_DM_INTV	120	/* dump memory log every 120 seconds */
 
 /** Allocation tag, please make sure dm_counters are declared in the same order. */
 enum dm_tag {

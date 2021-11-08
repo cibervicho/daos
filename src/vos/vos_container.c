@@ -190,7 +190,7 @@ cont_free_internal(struct vos_container *cont)
 			  "Cont "DF_UUID" leak CMT DTX entries (1): %u/%u\n",
 			  DP_UUID(cont->vc_id), cont->vc_dtx_committed_count, c_cnt);
 
-		D_ASSERTF(pool->vp_dtx_committed_count = p_cnt - c_cnt,
+		D_ASSERTF(pool->vp_dtx_committed_count == (p_cnt - c_cnt),
 			  "Cont "DF_UUID" leak CMT DTX entries (2): %u/%u/%u\n",
 			  DP_UUID(cont->vc_id), pool->vp_dtx_committed_count, p_cnt, c_cnt);
 	}

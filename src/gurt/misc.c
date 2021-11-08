@@ -189,12 +189,12 @@ dm_tls_register(int tag, struct dm_tls_counter *mtc)
 
 	pthread_mutex_lock(&dm_lock);
 
-	D_ASSERT(mc->mc_last < DM_TLS_MAX);
-	D_ASSERT(mc->mc_tls_cntrs[mc->mc_last] == NULL);
-
-	mc->mc_tls_cntrs[mc->mc_last] = mtc;
-	mc->mc_last++;
-	mtc->mtc_registered = true;
+	if (mc->mc_last < DM_TLS_MAX) {
+		D_ASSERT(mc->mc_tls_cntrs[mc->mc_last] == NULL);
+		mc->mc_tls_cntrs[mc->mc_last] = mtc;
+		mc->mc_last++;
+		mtc->mtc_registered = true;
+	}
 
 	pthread_mutex_unlock(&dm_lock);
 }
@@ -392,6 +392,7 @@ d_strndup(const char *s, size_t n)
 		return NULL;
 
 	strncpy(str, s, n);
+	str[n] = 0;
 	return str;
 }
 
@@ -416,6 +417,7 @@ d_asprintf(char **strp, const char *fmt, ...)
 		return -1;
 	}
 	strncpy(tmp2, tmp1, strlen(tmp1));
+	tmp2[strlen(tmp1)] = 0;
 	free(tmp1);
 	*strp = tmp2;
 
