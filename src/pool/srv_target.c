@@ -1252,11 +1252,9 @@ ds_pool_tgt_map_update(struct ds_pool *pool, struct pool_buf *buf,
 	     pool_map_get_version(pool->sp_map) < map_version)) {
 		struct pool_map *tmp = pool->sp_map;
 
-		D_DEBUG(DB_MD, DF_UUID
-			": update pool_map version: %p/%d -> %p/%d\n",
-			DP_UUID(pool->sp_uuid), pool->sp_map,
-			pool->sp_map ? pool_map_get_version(pool->sp_map) : -1,
-			map, pool_map_get_version(map));
+		D_INFO(DF_UUID": update pool map: %u -> %u (%p -> %p)\n", DP_UUID(pool->sp_uuid),
+		       pool->sp_map == NULL ? 0 : pool_map_get_version(pool->sp_map),
+		       pool_map_get_version(map), pool->sp_map, map);
 
 		rc = update_pool_group(pool, map);
 		if (rc != 0) {
@@ -1289,10 +1287,8 @@ ds_pool_tgt_map_update(struct ds_pool *pool, struct pool_buf *buf,
 
 	/* Check if the pool map on each xstream needs to update */
 	if (pool->sp_map_version < map_version) {
-		D_DEBUG(DB_MD, DF_UUID
-			": changed cached map version: %u -> %u\n",
-			DP_UUID(pool->sp_uuid), pool->sp_map_version,
-			map_version);
+		D_INFO(DF_UUID": update pool map version: %u -> %u\n", DP_UUID(pool->sp_uuid),
+		       pool->sp_map_version, map_version);
 
 		pool->sp_map_version = map_version;
 		rc = dss_task_collective(update_child_map, pool, 0);
@@ -1320,9 +1316,9 @@ ds_pool_tgt_map_update(struct ds_pool *pool, struct pool_buf *buf,
 			D_FREE(arg);
 		}
 	} else {
-		D_WARN("Ignore update pool "DF_UUID" %d -> %d\n",
-		       DP_UUID(pool->sp_uuid), pool->sp_map_version,
-		       map_version);
+		D_DEBUG(DB_MD, DF_UUID": ignore incoming %u: local=%u/%u\n",
+			DP_UUID(pool->sp_uuid), map_version, pool_map_get_version(pool->sp_map),
+			pool->sp_map_version);
 	}
 out:
 	ABT_rwlock_unlock(pool->sp_lock);
@@ -1402,11 +1398,13 @@ ds_pool_tgt_query_map_handler(crt_rpc_t *rpc)
 	unsigned int			version;
 	int				rc;
 
-	D_DEBUG(DB_TRACE, DF_UUID": handling rpc %p\n",
+	D_INFO(DF_UUID": handling rpc %p\n",
 		DP_UUID(in->tmi_op.pi_uuid), rpc);
 
 	hdl = ds_pool_hdl_lookup(in->tmi_op.pi_hdl);
 	if (hdl == NULL) {
+		D_ERROR(DF_UUID": cannot find handle "DF_UUID"\n", DP_UUID(in->tmi_op.pi_uuid),
+			DP_UUID(in->tmi_op.pi_hdl));
 		rc = -DER_NO_HDL;
 		goto out;
 	}
@@ -1421,12 +1419,14 @@ ds_pool_tgt_query_map_handler(crt_rpc_t *rpc)
 		goto out_hdl;
 	}
 	rc = pool_buf_extract(pool->sp_map, &buf);
+	D_INFO("pool_buf_extract: "DF_RC"\n", DP_RC(rc));
 	ABT_rwlock_unlock(pool->sp_lock);
 	if (rc != 0)
 		goto out_hdl;
 
 	rc = ds_pool_transfer_map_buf(buf, version, rpc, in->tmi_map_bulk,
 				      &out->tmo_map_buf_size);
+	D_INFO("transfer_map_buf: "DF_RC"\n", DP_RC(rc));
 
 	D_FREE(buf);
 out_hdl:
@@ -1434,7 +1434,7 @@ out_hdl:
 	ds_pool_hdl_put(hdl);
 out:
 	out->tmo_op.po_rc = rc;
-	D_DEBUG(DB_TRACE, DF_UUID": replying rpc %p: "DF_RC"\n",
+	D_INFO(DF_UUID": replying rpc %p: "DF_RC"\n",
 		DP_UUID(in->tmi_op.pi_uuid), rpc, DP_RC(out->tmo_op.po_rc));
 	crt_reply_send(rpc);
 }

@@ -252,10 +252,8 @@ dc_pool_map_update(struct dc_pool *pool, struct pool_map *map, bool connect)
 		D_GOTO(out, rc = 0);
 	}
 
-	D_DEBUG(DF_DSMC, DF_UUID": updating pool map: %u -> %u\n",
-		DP_UUID(pool->dp_pool),
-		pool->dp_map == NULL ?
-		0 : pool_map_get_version(pool->dp_map), map_version);
+	D_ERROR(DF_UUID": update pool map: %u -> %u\n", DP_UUID(pool->dp_pool),
+	       pool->dp_map == NULL ? 0 : pool_map_get_version(pool->dp_map), map_version);
 
 	rc = pl_map_update(pool->dp_pool, map, connect, DEFAULT_PL_TYPE);
 	if (rc != 0) {
@@ -268,8 +266,11 @@ dc_pool_map_update(struct dc_pool *pool, struct pool_map *map, bool connect)
 out_update:
 	pool_map_addref(map);
 	pool->dp_map = map;
-	if (pool->dp_map_version_known < map_version)
+	if (pool->dp_map_version_known < map_version) {
+		D_DEBUG(DB_MD, DF_UUID": map_version_known: %u -> %u\n", DP_UUID(pool->dp_pool),
+			pool->dp_map_version_known, map_version);
 		pool->dp_map_version_known = map_version;
+	}
 out:
 	return rc;
 }
@@ -1547,7 +1548,7 @@ map_refresh_cb(tse_task_t *task, void *varg)
 	 */
 	D_RWLOCK_WRLOCK(&pool->dp_map_lock);
 
-	D_DEBUG(DB_MD, DF_UUID": %p: crt: "DF_RC"\n", DP_UUID(pool->dp_pool), task, DP_RC(rc));
+	D_ERROR(DF_UUID": %p: crt: "DF_RC"\n", DP_UUID(pool->dp_pool), task, DP_RC(rc));
 	if (daos_rpc_retryable_rc(rc)) {
 		reinit = true;
 		goto out;
@@ -1561,7 +1562,7 @@ map_refresh_cb(tse_task_t *task, void *varg)
 		 * cb_arg->mrc_map_buf is not large enough. Retry with the size
 		 * suggested by the server side.
 		 */
-		D_DEBUG(DB_MD, DF_UUID": %p: map buf < required %u\n",
+		D_ERROR(DF_UUID": %p: map buf < required %u\n",
 			DP_UUID(pool->dp_pool), task, out->tmo_map_buf_size);
 		pool->dp_map_sz = out->tmo_map_buf_size;
 		reinit = true;
@@ -1583,8 +1584,7 @@ map_refresh_cb(tse_task_t *task, void *varg)
 		 * If the cached pool map version is known to be stale, we also
 		 * need to retry. Otherwise, we are done.
 		 */
-		D_DEBUG(DB_MD,
-			DF_UUID": %p: no requested version from rank %u: "
+		D_ERROR(DF_UUID": %p: no requested version from rank %u: "
 			"requested=%u known=%u remote=%u\n",
 			DP_UUID(pool->dp_pool), task,
 			cb_arg->mrc_rpc->cr_ep.ep_rank, in->tmi_map_version,
@@ -1603,7 +1603,7 @@ map_refresh_cb(tse_task_t *task, void *varg)
 		 * The server side has provided a version we requested for, but
 		 * we are no longer interested in it.
 		 */
-		D_DEBUG(DB_MD, DF_UUID": %p: got stale %u < known %u or <= cached %u\n",
+		D_ERROR(DF_UUID": %p: got stale %u < known %u or <= cached %u\n",
 			DP_UUID(pool->dp_pool), task, out->tmo_op.po_map_version,
 			pool->dp_map_version_known, version_cached);
 		reinit = true;
@@ -1630,8 +1630,7 @@ out:
 		backoff = d_backoff_seq_next(&arg->mra_backoff_seq);
 		rc_tmp = tse_task_reinit_with_delay(task, backoff);
 		if (rc_tmp == 0) {
-			D_DEBUG(DB_MD,
-				DF_UUID": %p: reinitialized due to "DF_RC" with backoff %u\n",
+			D_ERROR(DF_UUID": %p: reinitialized due to "DF_RC" with backoff %u\n",
 				DP_UUID(pool->dp_pool), task, DP_RC(rc), backoff);
 			rc = 0;
 		} else {
@@ -1679,7 +1678,7 @@ map_refresh(tse_task_t *task)
 		 * register its completion callback to the bottom of the
 		 * resulting task's callback stack.
 		 */
-		D_DEBUG(DB_MD, DF_UUID": %p: passive done\n", DP_UUID(pool->dp_pool), task);
+		D_ERROR(DF_UUID": %p: passive done\n", DP_UUID(pool->dp_pool), task);
 		rc = 0;
 		goto out_task;
 	}
@@ -1687,8 +1686,11 @@ map_refresh(tse_task_t *task)
 	D_RWLOCK_WRLOCK(&pool->dp_map_lock);
 
 	/* Update the highest known pool map version in all cases. */
-	if (pool->dp_map_version_known < arg->mra_map_version)
+	if (pool->dp_map_version_known < arg->mra_map_version) {
+		D_ERROR(DF_UUID": map_version_known: %u -> %u\n", DP_UUID(pool->dp_pool),
+			pool->dp_map_version_known, arg->mra_map_version);
 		pool->dp_map_version_known = arg->mra_map_version;
+	}
 
 	if (arg->mra_map_version != 0 && !map_known_stale(pool)) {
 		D_RWLOCK_UNLOCK(&pool->dp_map_lock);
@@ -1706,7 +1708,7 @@ map_refresh(tse_task_t *task)
 		 * known version here via the pool->dp_map_version_known update
 		 * above, and retry till the highest known version is cached.
 		 */
-		D_DEBUG(DB_MD, DF_UUID": %p: becoming passive waiting for %p\n",
+		D_ERROR(DF_UUID": %p: becoming passive waiting for %p\n",
 			DP_UUID(pool->dp_pool), task, pool->dp_map_task);
 		arg->mra_passive = true;
 		rc = tse_task_register_deps(task, 1, &pool->dp_map_task);
@@ -1726,7 +1728,7 @@ map_refresh(tse_task_t *task)
 	}
 
 	/* No active pool map refresh task; become one. */
-	D_DEBUG(DB_MD, DF_UUID": %p: becoming active\n", DP_UUID(pool->dp_pool), task);
+	D_ERROR(DF_UUID": %p: becoming active\n", DP_UUID(pool->dp_pool), task);
 	tse_task_addref(task);
 	pool->dp_map_task = task;
 
@@ -1759,7 +1761,7 @@ map_refresh(tse_task_t *task)
 		goto out_cb_arg;
 	}
 
-	D_DEBUG(DB_MD, DF_UUID": %p: asking rank %u for version > %u\n",
+	D_ERROR(DF_UUID": %p: asking rank %u for version > %u\n",
 		DP_UUID(pool->dp_pool), task, rank, version);
 	return daos_rpc_send(rpc, task);
 

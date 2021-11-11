@@ -387,6 +387,7 @@ obj_layout_refresh(struct dc_object *obj)
 	rc = obj_layout_create(obj, true);
 	D_RWLOCK_UNLOCK(&obj->cob_lock);
 
+	D_ERROR(DF_RC"\n", DP_RC(rc));
 	return rc;
 }
 

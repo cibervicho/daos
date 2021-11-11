@@ -1,3 +1,8 @@
+ENV:
+  default:
+    - D_LOG_MASK: DEBUG,MEM=ERR
+    - DD_MASK: mgmt,md,dsms,dsmc
+    - DD_SUBSYS: mgmt,pool,rebuild
 hosts:
   servers: !mux
     6_server:
@@ -41,6 +46,10 @@ server_config:
       scm_class: dcpm
       scm_list: ["/dev/pmem0"]
       scm_mount: /mnt/daos0
+      log_mask: DEBUG,MEM=ERR
+      env_vars:
+        - DD_MASK=mgmt,md,dsms,dsmc
+        - DD_SUBSYS=mgmt,pool,rebuild
     1:
       pinned_numa_node: 1
       nr_xs_helpers: 1
@@ -52,6 +61,10 @@ server_config:
       scm_class: dcpm
       scm_list: ["/dev/pmem1"]
       scm_mount: /mnt/daos1
+      log_mask: DEBUG,MEM=ERR
+      env_vars:
+        - DD_MASK=mgmt,md,dsms,dsmc
+        - DD_SUBSYS=mgmt,pool,rebuild
 pool:
     name: daos_server
     control_method: dmg
