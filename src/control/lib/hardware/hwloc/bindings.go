@@ -73,6 +73,7 @@ hwloc_obj_t cmpt_get_child(hwloc_obj_t node, int idx)
 import "C"
 
 import (
+	"fmt"
 	"sync"
 	"unsafe"
 
@@ -185,9 +186,10 @@ func (t *topology) getNumObjByType(objType ObjType) uint {
 type ObjType uint
 
 const (
-	ObjTypeOSDevice = ObjType(C.HWLOC_OBJ_OS_DEVICE)
-	ObjTypeNUMANode = ObjType(C.HWLOC_OBJ_NUMANODE)
-	ObjTypeCore     = ObjType(C.HWLOC_OBJ_CORE)
+	ObjTypeOSDevice  = ObjType(C.HWLOC_OBJ_OS_DEVICE)
+	ObjTypePCIDevice = ObjType(C.HWLOC_OBJ_PCI_DEVICE)
+	ObjTypeNUMANode  = ObjType(C.HWLOC_OBJ_NUMANODE)
+	ObjTypeCore      = ObjType(C.HWLOC_OBJ_CORE)
 
 	TypeDepthOSDevice = C.HWLOC_TYPE_DEPTH_OS_DEVICE
 	TypeDepthUnknown  = C.HWLOC_TYPE_DEPTH_UNKNOWN
@@ -268,7 +270,18 @@ func (o *object) OSDevType() (int, error) {
 	if o.cObj.attr == nil {
 		return 0, errors.Errorf("device %q attrs are nil", o.Name())
 	}
-	return o.cObj.attr.osdev._type
+	return o.cObj.attr.osdev._type, nil
+}
+
+func (o *object) PCIAddr() (string, error) {
+	if o.Type() != ObjTypePCIDevice {
+		return "", errors.Errorf("device %q is not a PCI Device", o.Name())
+	}
+	if o.cObj.attr == nil {
+		return "", errors.Errorf("device %q attrs are nil", o.Name())
+	}
+	return fmt.Sprintf("%04d:%02d:%02d.%02d", cObj.attr.pcidev.domain, cObj.attr.pcidev.bus,
+		cObj.attr.pcidev.dev, cObj.attr.pcidev._func), nil
 }
 
 func newObject(topo rawTopology, cObj C.hwloc_obj_t) *object {

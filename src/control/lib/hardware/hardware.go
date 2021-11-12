@@ -22,11 +22,32 @@ type Topology struct {
 type NUMANode struct {
 	ID       uint
 	NumCores uint
-	Devices  map[string]*Device
+	Devices  map[string][]*Device
+}
+
+type DevType uint
+
+const (
+	DevTypeUnknown DevType = iota
+	DevTypeNetwork
+	DevTypeOpenFabric
+)
+
+func (t DevType) String() string {
+	switch t {
+	case DevTypeNetwork:
+		return "Network"
+	case DevTypeOpenFabric:
+		return "OpenFabric"
+	}
+
+	return "Unknown"
 }
 
 type Device struct {
-	Name string
+	Name    string
+	Type    DevType
+	PCIAddr string
 }
 
 type FabricInterface struct {

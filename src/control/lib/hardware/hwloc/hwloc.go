@@ -8,12 +8,15 @@
 package hwloc
 
 import (
-	"github.com/daos-stack/daos/src/control/lib/hardware"
 	"github.com/pkg/errors"
+
+	"github.com/daos-stack/daos/src/control/lib/hardware"
+	"github.com/daos-stack/daos/src/control/logging"
 )
 
 type Provider struct {
 	api *api
+	log logging.Logger
 }
 
 func (p *Provider) GetTopology() (*hardware.Topology, error) {
@@ -59,6 +62,13 @@ func (p *Provider) getNUMANodes(topo *topology) (map[uint]*hardware.NUMANode, er
 		prevNode = numaObj
 	}
 
+	if len(nodes) == 0 {
+		nodes[0] = &hardware.NUMANode{
+			ID:      0,
+			Devices: devsByNode["unknown"],
+		}
+	}
+
 	return nodes, nil
 }
 
@@ -79,24 +89,72 @@ func (p *Provider) getCoreCountsPerNodeSet(topo *topology) map[string]uint {
 	return coresPerNode
 }
 
-func (p *Provider) getDevicesPerNodeSet(topo *topology) map[string]map[string]*hardware.Device {
+func (p *Provider) getDevicesPerNodeSet(topo *topology) map[string]map[string][]*hardware.Device {
 	prevDev := (*object)(nil)
-	devicesPerNode := make(map[string]map[string]*hardware.Device)
+	devicesPerNode := make(map[string]map[string][]*hardware.Device)
 	for {
 		devObj, err := topo.GetNextObjByType(ObjTypeOSDevice, prevDev)
 		if err != nil {
 			break
 		}
 
-		key := devObj.NodeSet().String()
-		devicesPerNode[key][devObj.Name()] = &hardware.Device{
-			Name: devObj.Name(),
+		devType, err := devObj.OSDevType()
+		if err != nil {
+			p.log.Errorf("failed to fetch OS dev type for object %q", devObj.Name())
+			continue
 		}
+
+		switch devType {
+		case OSDevTypeNetwork:
+		case OSDevTypeOpenFabric:
+			// the only device types we care about for now
+		default:
+			continue
+		}
+
+		key := "unknown"
+		parentNode, err := devObj.GetAncestorByType(ObjTypeNUMANode)
+		if err == nil {
+			key = parentNode.NodeSet().String()
+		}
+
+		if _, found := devicesPerNode[key]; !found {
+			devicesPerNode[key] = make(map[string][]*hardware.Device)
+		}
+
+		devKey := devObj.Name()
+		var pciAddr string
+		pciObj, err := devObj.GetAncestorByType(ObjTypePCIDevice)
+		if err == nil {
+			pciAddr, err = pciObj.PCIAddr()
+			if err != nil {
+				p.log.Debugf("unable to get PCI addr for device %q: %s", devObj.Name(), err.Error())
+			}
+			devKey = pciAddr
+		}
+
+		devicesPerNode[key][devKey] = append(devicesPerNode[key][devKey],
+			&hardware.Device{
+				Name:    devObj.Name(),
+				Type:    osDevTypeToHardwareDevType(devType),
+				PCIAddr: pciAddr,
+			})
 
 		prevDev = devObj
 	}
 
 	return devicesPerNode
+}
+
+func osDevTypeToHardwareDevType(osType int) hardware.DevType {
+	switch osType {
+	case OSDevTypeNetwork:
+		return hardware.DevTypeNetwork
+	case OSDevTypeOpenFabric:
+		return hardware.DevTypeOpenFabric
+	}
+
+	return hardware.DevTypeUnknown
 }
 
 // // API is an interface for basic API operations, including synchronizing access.
