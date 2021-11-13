@@ -123,7 +123,7 @@ restock(struct d_slab_type *type, int count)
 		if (type->st_reg.sr_reset) {
 			type->st_reset_count++;
 			reset_calls++;
-			rcb = type->st_reg.sr_reset(ptr);
+			rcb = type->st_reg.sr_reset(ptr, type->st_reg.sr_type_arg);
 		}
 		if (rcb) {
 			d_list_add(entry, &type->st_free_list);
@@ -173,7 +173,7 @@ d_slab_reclaim(struct d_slab *slab)
 			void *ptr = (void *)entry - type->st_reg.sr_offset;
 
 			if (type->st_reg.sr_release) {
-				type->st_reg.sr_release(ptr);
+				type->st_reg.sr_release(ptr, type->st_reg.sr_type_arg);
 				type->st_release_count++;
 			}
 
@@ -210,10 +210,10 @@ create(struct d_slab_type *type)
 
 	type->st_init_count++;
 	if (type->st_reg.sr_init)
-		type->st_reg.sr_init(ptr, type->st_slab->slab_arg);
+		type->st_reg.sr_init(ptr, type->st_slab->slab_arg, type->st_reg.sr_type_arg);
 
 	if (type->st_reg.sr_reset) {
-		if (!type->st_reg.sr_reset(ptr)) {
+		if (!type->st_reg.sr_reset(ptr, type->st_reg.sr_type_arg)) {
 			D_TRACE_INFO(type, "entry %p failed reset", ptr);
 			D_FREE(ptr);
 			return NULL;
