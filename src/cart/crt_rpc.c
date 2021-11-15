@@ -637,6 +637,24 @@ out:
 	return rc;
 }
 
+int
+crt_req_get_timeout(crt_rpc_t *req, uint32_t *timeout_sec)
+{
+	struct crt_rpc_priv	*rpc_priv;
+	int			 rc = 0;
+
+	if (req == NULL || timeout_sec == NULL) {
+		D_ERROR("invalid parameter (NULL req or timeout_sec).\n");
+		D_GOTO(out, rc = -DER_INVAL);
+	}
+
+	rpc_priv = container_of(req, struct crt_rpc_priv, crp_pub);
+	*timeout_sec = rpc_priv->crp_timeout_sec;
+
+out:
+	return rc;
+}
+
 /* Called from a decref() call when the count drops to zero */
 void
 crt_req_destroy(struct crt_rpc_priv *rpc_priv)
