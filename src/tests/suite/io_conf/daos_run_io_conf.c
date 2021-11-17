@@ -31,7 +31,7 @@ main(int argc, char **argv)
 	void			*state = NULL;
 	int			rc;
 
-	MPI_Init(&argc, &argv);
+	par_init(&argc, &argv);
 	rc = daos_init();
 	if (rc) {
 		fprintf(stderr, "daos init failed: rc %d\n", rc);
@@ -80,7 +80,7 @@ main(int argc, char **argv)
 	daos_obj_set_oid(&eio_arg->op_oid, 0, dts_obj_class, 0);
 	arg->eio_args.op_no_verify = 1;	/* No verification for now */
 
-	MPI_Barrier(MPI_COMM_WORLD);
+	par_barrier();
 
 	rc = io_conf_run(arg, fname);
 	if (rc)
@@ -89,9 +89,9 @@ main(int argc, char **argv)
 	test_teardown(&state);
 
 	daos_fini();
-	MPI_Barrier(MPI_COMM_WORLD);
+	par_barrier();
 	fprintf(stdout, "daos_run_io_conf completed successfully\n");
 out_fini:
-	MPI_Finalize();
+	par_fini();
 	return rc;
 }
