@@ -24,7 +24,7 @@ ARG REPO_URL
 ARG REPO_DISTRO
 RUN if [ -n "$REPO_DISTRO" ]; then                               \
       rpm --import /etc/pki/rpm-gpg/*;                           \
-      for repo in centos-8.5-{base,extras,powertools}; do        \
+      for repo in centos-8.5.2111-{base,extras,powertools}; do        \
           MY_REPO="${REPO_URL}repository/$repo-x86_64-proxy";    \
           MY_NAME="${MY_REPO#*//}";                              \
           MY_NAME="${MY_NAME//\//_}";                            \
