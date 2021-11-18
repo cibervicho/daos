@@ -387,7 +387,8 @@ vos_tls_init(int xs_id, int tgt_id)
 
 	D_INIT_LIST_HEAD(&tls->vtl_gc_pools);
 
-	rc = d_slab_init(&tls->vtl_slab, NULL);
+	D_TRACE_ROOT(DB_MEM, tls, "tls");
+	rc = d_slab_init(&tls->vtl_slab, tls);
 	if (rc) {
 		D_ERROR("Error in starting gurt slab manager: "DF_RC"\n", DP_RC(rc));
 		goto failed;
