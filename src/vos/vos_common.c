@@ -366,11 +366,15 @@ vos_tls_fini(void *data)
 	D_FREE(tls);
 }
 
+#define TLS_NAME_MAX 64
+
 static void *
 vos_tls_init(int xs_id, int tgt_id)
 {
 	struct vos_tls *tls;
+	char		buf[TLS_NAME_MAX];
 	int		rc;
+
 	struct lru_slab_info lid_info	= {
 		.si_cbs			= {0},
 		.si_arg			= NULL,
@@ -387,7 +391,11 @@ vos_tls_init(int xs_id, int tgt_id)
 
 	D_INIT_LIST_HEAD(&tls->vtl_gc_pools);
 
-	D_TRACE_ROOT(DB_MEM, tls, "tls");
+	if (D_LOG_ENABLED(DB_MEM)) {
+		snprintf(buf, TLS_NAME_MAX, "vos_xs%d_tgt_%d", xs_id, tgt_id);
+		buf[TLS_NAME_MAX - 1] = 0;
+		D_TRACE_ROOT(DB_MEM, tls, buf);
+	}
 	rc = d_slab_init(&tls->vtl_slab, tls);
 	if (rc) {
 		D_ERROR("Error in starting gurt slab manager: "DF_RC"\n", DP_RC(rc));
