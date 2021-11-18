@@ -10,6 +10,23 @@ package hwloc
 #cgo LDFLAGS: -lhwloc
 #include <hwloc.h>
 
+int cmpt_get_osdev_type(hwloc_obj_t node)
+{
+	if (node->attr == NULL) {
+		return -1;
+	}
+
+	return node->attr->osdev.type;
+}
+
+struct hwloc_pcidev_attr_s *cmpt_get_pcidev_attr(hwloc_obj_t node) {
+	if (node->attr == NULL) {
+		return NULL;
+	}
+
+	return &node->attr->pcidev;
+}
+
 #if HWLOC_API_VERSION >= 0x00020000
 
 int cmpt_setFlags(hwloc_topology_t topology)
@@ -17,14 +34,9 @@ int cmpt_setFlags(hwloc_topology_t topology)
 	return hwloc_topology_set_all_types_filter(topology, HWLOC_TYPE_FILTER_KEEP_ALL);
 }
 
-hwloc_obj_t cmpt_get_obj_by_depth(hwloc_topology_t topology, int depth, uint idx)
+int cmpt_get_arity(hwloc_obj_t node)
 {
-	return hwloc_get_obj_by_depth(topology, depth, idx);
-}
-
-uint cmpt_get_nbobjs_by_depth(hwloc_topology_t topology, int depth)
-{
-	return (uint)hwloc_get_nbobjs_by_depth(topology, depth);
+	return node->io_arity;
 }
 
 int cmpt_get_parent_arity(hwloc_obj_t node)
@@ -32,12 +44,24 @@ int cmpt_get_parent_arity(hwloc_obj_t node)
 	return node->parent->io_arity;
 }
 
-hwloc_obj_t cmpt_get_child(hwloc_obj_t node, int idx)
+hwloc_obj_t cmpt_get_sibling(hwloc_obj_t node, int idx)
 {
 	hwloc_obj_t child;
 	int i;
 
 	child = node->parent->io_first_child;
+	for (i = 0; i < idx; i++) {
+		child = child->next_sibling;
+	}
+	return child;
+}
+
+hwloc_obj_t cmpt_get_child(hwloc_obj_t node, int idx)
+{
+	hwloc_obj_t child;
+	int i;
+
+	child = node->io_first_child;
 	for (i = 0; i < idx; i++) {
 		child = child->next_sibling;
 	}
@@ -49,14 +73,9 @@ int cmpt_setFlags(hwloc_topology_t topology)
 	return hwloc_topology_set_flags(topology, HWLOC_TOPOLOGY_FLAG_IO_DEVICES);
 }
 
-hwloc_obj_t cmpt_get_obj_by_depth(hwloc_topology_t topology, int depth, uint idx)
+int cmpt_get_arity(hwloc_obj_t node)
 {
-	return hwloc_get_obj_by_depth(topology, (uint)depth, idx);
-}
-
-uint cmpt_get_nbobjs_by_depth(hwloc_topology_t topology, int depth)
-{
-	return (uint)hwloc_get_nbobjs_by_depth(topology, (uint)depth);
+	return node->arity;
 }
 
 int cmpt_get_parent_arity(hwloc_obj_t node)
@@ -64,9 +83,14 @@ int cmpt_get_parent_arity(hwloc_obj_t node)
 	return node->parent->arity;
 }
 
-hwloc_obj_t cmpt_get_child(hwloc_obj_t node, int idx)
+hwloc_obj_t cmpt_get_sibling(hwloc_obj_t node, int idx)
 {
 	return node->parent->children[idx];
+}
+
+hwloc_obj_t cmpt_get_child(hwloc_obj_t node, int idx)
+{
+	return node->children[idx];
 }
 #endif
 */
@@ -116,7 +140,7 @@ func (t *topology) raw() C.hwloc_topology_t {
 	return t.cTopology
 }
 
-func (t *topology) GetProcessCPUSet(pid int32, flags int) (*cpuSet, func(), error) {
+func (t *topology) getProcessCPUSet(pid int32, flags int) (*cpuSet, func(), error) {
 	// Access to hwloc_get_proc_cpubind must be synchronized
 	t.api.Lock()
 	defer t.api.Unlock()
@@ -151,15 +175,7 @@ func (t *topology) load() error {
 	return nil
 }
 
-func (t *topology) GetObjByDepth(depth int, index uint) (*object, error) {
-	obj := C.cmpt_get_obj_by_depth(t.cTopology, C.int(depth), C.uint(index))
-	if obj == nil {
-		return nil, errors.Errorf("no hwloc object found with depth=%d, index=%d", depth, index)
-	}
-	return newObject(t, obj), nil
-}
-
-func (t *topology) GetNextObjByType(objType ObjType, prev *object) (*object, error) {
+func (t *topology) getNextObjByType(objType int, prev *object) (*object, error) {
 	var cPrev C.hwloc_obj_t
 	if prev != nil {
 		cPrev = prev.cObj
@@ -171,31 +187,18 @@ func (t *topology) GetNextObjByType(objType ObjType, prev *object) (*object, err
 	return newObject(t, obj), nil
 }
 
-func (t *topology) GetTypeDepth(objType ObjType) int {
-	return int(C.hwloc_get_type_depth(t.cTopology, C.hwloc_obj_type_t(objType)))
-}
-
-func (t *topology) GetNumObjAtDepth(depth int) uint {
-	return uint(C.cmpt_get_nbobjs_by_depth(t.cTopology, C.int(depth)))
-}
-
-func (t *topology) getNumObjByType(objType ObjType) uint {
+func (t *topology) getNumObjByType(objType int) uint {
 	return uint(C.hwloc_get_nbobjs_by_type(t.cTopology, C.hwloc_obj_type_t(objType)))
 }
 
-type ObjType uint
-
 const (
-	ObjTypeOSDevice  = ObjType(C.HWLOC_OBJ_OS_DEVICE)
-	ObjTypePCIDevice = ObjType(C.HWLOC_OBJ_PCI_DEVICE)
-	ObjTypeNUMANode  = ObjType(C.HWLOC_OBJ_NUMANODE)
-	ObjTypeCore      = ObjType(C.HWLOC_OBJ_CORE)
+	objTypeOSDevice  = C.HWLOC_OBJ_OS_DEVICE
+	objTypePCIDevice = C.HWLOC_OBJ_PCI_DEVICE
+	objTypeNUMANode  = C.HWLOC_OBJ_NUMANODE
+	objTypeCore      = C.HWLOC_OBJ_CORE
 
-	TypeDepthOSDevice = C.HWLOC_TYPE_DEPTH_OS_DEVICE
-	TypeDepthUnknown  = C.HWLOC_TYPE_DEPTH_UNKNOWN
-
-	OSDevTypeNetwork    = C.HWLOC_OBJ_OSDEV_NETWORK
-	OSDevTypeOpenFabric = C.HWLOC_OBJ_OSDEV_OPENFABRIC
+	osDevTypeNetwork     = C.HWLOC_OBJ_OSDEV_NETWORK
+	osDevTypeOpenFabrics = C.HWLOC_OBJ_OSDEV_OPENFABRICS
 )
 
 type rawTopology interface {
@@ -208,80 +211,81 @@ type object struct {
 	topo rawTopology
 }
 
-func (o *object) Name() string {
+func (o *object) name() string {
 	return C.GoString(o.cObj.name)
 }
 
-func (o *object) OSIndex() uint {
+func (o *object) osIndex() uint {
 	return uint(o.cObj.os_index)
 }
 
-func (o *object) LogicalIndex() uint {
+func (o *object) logicalIndex() uint {
 	return uint(o.cObj.logical_index)
 }
 
-func (o *object) GetNumSiblings() uint {
+func (o *object) getNumSiblings() uint {
 	return uint(C.cmpt_get_parent_arity(o.cObj))
 }
 
-func (o *object) GetChild(index uint) (*object, error) {
+func (o *object) getSibling(index uint) (*object, error) {
+	cResult := C.cmpt_get_sibling(o.cObj, C.int(index))
+	if cResult == nil {
+		return nil, errors.Errorf("sibling of object %q not found", o.name())
+	}
+
+	return newObject(o.topo, cResult), nil
+}
+
+func (o *object) getNumChildren() uint {
+	return uint(C.cmpt_get_arity(o.cObj))
+}
+
+func (o *object) getChild(index uint) (*object, error) {
+	if o.cObj.children == nil {
+		return nil, errors.Errorf("object %q has no children", o.name())
+	}
+
+	if index >= o.getNumChildren() {
+		return nil, errors.Errorf("index %d not possible; object %q has %d children", index, o.name(), o.getNumChildren())
+	}
+
 	cResult := C.cmpt_get_child(o.cObj, C.int(index))
-	if cResult == nil {
-		return nil, errors.Errorf("child of object %q not found", o.Name())
-	}
-
 	return newObject(o.topo, cResult), nil
 }
 
-func (o *object) GetAncestorByType(objType ObjType) (*object, error) {
-	cResult := C.hwloc_get_ancestor_obj_by_type(o.topo.raw(), C.hwloc_obj_type_t(objType), o.cObj)
-	if cResult == nil {
-		return nil, errors.Errorf("type %v ancestor of object %q not found", objType, o.Name())
-	}
-
-	return newObject(o.topo, cResult), nil
-}
-
-func (o *object) GetNonIOAncestor() (*object, error) {
-	ancestorNode := C.hwloc_get_non_io_ancestor_obj(o.topo.raw(), o.cObj)
-	if ancestorNode == nil {
-		return nil, errors.New("unable to find non-io ancestor node for device")
-	}
-
-	return newObject(o.topo, ancestorNode), nil
-}
-
-func (o *object) CPUSet() *cpuSet {
+func (o *object) cpuSet() *cpuSet {
 	return newCPUSet(o.topo, o.cObj.cpuset)
 }
 
-func (o *object) NodeSet() *nodeSet {
+func (o *object) nodeSet() *nodeSet {
 	return newNodeSet(o.cObj.nodeset)
 }
 
-func (o *object) Type() ObjType {
-	return ObjType(o.cObj._type)
+func (o *object) objType() int {
+	return int(o.cObj._type)
 }
 
-func (o *object) OSDevType() (int, error) {
-	if o.Type() != ObjTypeOSDevice {
-		return 0, errors.Errorf("device %q is not an OS Device", o.Name())
+func (o *object) osDevType() (int, error) {
+	if o.objType() != objTypeOSDevice {
+		return 0, errors.Errorf("device %q is not an OS Device", o.name())
 	}
-	if o.cObj.attr == nil {
-		return 0, errors.Errorf("device %q attrs are nil", o.Name())
+	devType := C.cmpt_get_osdev_type(o.cObj)
+	if devType < 0 {
+		return 0, errors.Errorf("device %q attrs are nil", o.name())
 	}
-	return o.cObj.attr.osdev._type, nil
+	return int(devType), nil
 }
 
-func (o *object) PCIAddr() (string, error) {
-	if o.Type() != ObjTypePCIDevice {
-		return "", errors.Errorf("device %q is not a PCI Device", o.Name())
+func (o *object) pciAddr() (string, error) {
+	if o.objType() != objTypePCIDevice {
+		return "", errors.Errorf("device %q is not a PCI Device", o.name())
 	}
-	if o.cObj.attr == nil {
-		return "", errors.Errorf("device %q attrs are nil", o.Name())
+	pciDevAttr := C.cmpt_get_pcidev_attr(o.cObj)
+	if pciDevAttr == nil {
+		return "", errors.Errorf("device %q attrs are nil", o.name())
 	}
-	return fmt.Sprintf("%04d:%02d:%02d.%02d", cObj.attr.pcidev.domain, cObj.attr.pcidev.bus,
-		cObj.attr.pcidev.dev, cObj.attr.pcidev._func), nil
+	return fmt.Sprintf("%04d:%02d:%02d.%02d", pciDevAttr.domain, pciDevAttr.bus,
+		pciDevAttr.dev, pciDevAttr._func), nil
 }
 
 func newObject(topo rawTopology, cObj C.hwloc_obj_t) *object {

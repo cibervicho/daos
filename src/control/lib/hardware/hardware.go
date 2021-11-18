@@ -7,58 +7,49 @@
 // hardware is a package that reveals details about the hardware topology.
 package hardware
 
-// type NUMAProvider interface {
-// 	NumNUMANodes() uint
-// 	NumCoresPerNUMANode() uint
-// 	IsNUMAAware() bool
-// 	NUMANodeForPID(int32) (int, error)
-// 	VerifyDeviceIsNUMALocal(dev string, numaNode uint) error
-// }
-
+// Topology is a hierarchy of hardware devices grouped under NUMA nodes.
 type Topology struct {
 	NUMANodes map[uint]*NUMANode
 }
 
+// NUMANode represents an individual NUMA node in the system and the devices associated with it.
 type NUMANode struct {
-	ID       uint
-	NumCores uint
-	Devices  map[string][]*Device
+	ID         uint
+	NumCores   uint
+	PCIDevices map[string][]*Device
 }
 
-type DevType uint
+// DeviceType indicates the type of a hardware device.
+type DeviceType uint
 
 const (
-	DevTypeUnknown DevType = iota
-	DevTypeNetwork
-	DevTypeOpenFabric
+	// DeviceTypeUnknown indicates a device type that is not recognized.
+	DeviceTypeUnknown DeviceType = iota
+	// DeviceTypeNetwork indicates a standard network device.
+	DeviceTypeNetwork
+	// DeviceTypeOpenFabrics indicates an OpenFabrics device.
+	DeviceTypeOpenFabrics
 )
 
-func (t DevType) String() string {
+func (t DeviceType) String() string {
 	switch t {
-	case DevTypeNetwork:
+	case DeviceTypeNetwork:
 		return "Network"
-	case DevTypeOpenFabric:
-		return "OpenFabric"
+	case DeviceTypeOpenFabrics:
+		return "OpenFabrics"
 	}
 
 	return "Unknown"
 }
 
+// Device represents an individual hardware device.
 type Device struct {
 	Name    string
-	Type    DevType
+	Type    DeviceType
 	PCIAddr string
 }
 
-type FabricInterface struct {
-	// Provider    string `json:"provider"`
-	Name     string `json:"device"`
-	Domain   string `json:"domain"`
-	NUMANode uint   `json:"numanode"`
-	// Priority    int    `json:"priority"`
-	// NetDevClass uint32 `json:"netdevclass"`
-}
-
+// TopologyProvider is an interface for acquiring a system topology.
 type TopologyProvider interface {
 	GetTopology() (*Topology, error)
 }

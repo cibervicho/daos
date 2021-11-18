@@ -6,164 +6,130 @@
 
 package hwloc
 
-// func TestHwloc_GetAPI(t *testing.T) {
-// 	if GetAPI() == nil {
-// 		t.Fatal("GetAPI() returned nil")
-// 	}
-// }
+import (
+	"os"
+	"testing"
 
-// type mockAPI struct {
-// 	runtimeVer     uint
-// 	compVer        uint
-// 	numCallsLock   uint
-// 	numCallsUnlock uint
-// 	newTopo        internalTopology
-// 	newTopoCleanup func()
-// 	newTopoErr     error
-// }
+	"github.com/google/go-cmp/cmp"
 
-// func (m *mockAPI) Lock() {
-// 	m.numCallsLock++
-// }
+	"github.com/daos-stack/daos/src/control/common"
+	"github.com/daos-stack/daos/src/control/lib/hardware"
+	"github.com/daos-stack/daos/src/control/logging"
+)
 
-// func (m *mockAPI) Unlock() {
-// 	m.numCallsUnlock++
-// }
+func TestHwlocProvider_GetTopology(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hwlocXMLFile string
+		expResult    *hardware.Topology
+	}{
+		"boro-84": {
+			hwlocXMLFile: "testdata/boro-84.xml",
+			expResult: &hardware.Topology{
+				NUMANodes: map[uint]*hardware.NUMANode{
+					0: {
+						ID:       0,
+						NumCores: 24,
+						PCIDevices: map[string][]*hardware.Device{
+							"0000:18:00.0": {
+								{
+									Name:    "ib0",
+									Type:    hardware.DeviceTypeNetwork,
+									PCIAddr: "0000:18:00.0",
+								},
+								{
+									Name:    "hfi1_0",
+									Type:    hardware.DeviceTypeOpenFabrics,
+									PCIAddr: "0000:18:00.0",
+								},
+							},
+							"0000:3d:00.1": {
+								{
+									Name:    "eth0",
+									Type:    hardware.DeviceTypeNetwork,
+									PCIAddr: "0000:3d:00.1",
+								},
+								{
+									Name:    "i40iw0",
+									Type:    hardware.DeviceTypeOpenFabrics,
+									PCIAddr: "0000:3d:00.1",
+								},
+							},
+						},
+					},
+					1: {
+						ID:         1,
+						NumCores:   24,
+						PCIDevices: map[string][]*hardware.Device{},
+					},
+				},
+			},
+		},
+		"wolf-133": {
+			hwlocXMLFile: "testdata/wolf-133.xml",
+			expResult: &hardware.Topology{
+				NUMANodes: map[uint]*hardware.NUMANode{
+					0: {
+						ID:       0,
+						NumCores: 24,
+						PCIDevices: map[string][]*hardware.Device{
+							"0000:18:00.0": {
+								{
+									Name:    "ib0",
+									Type:    hardware.DeviceTypeNetwork,
+									PCIAddr: "0000:18:00.0",
+								},
+								{
+									Name:    "hfi1_0",
+									Type:    hardware.DeviceTypeOpenFabrics,
+									PCIAddr: "0000:18:00.0",
+								},
+							},
+							"0000:3d:00.1": {
+								{
+									Name:    "eth0",
+									Type:    hardware.DeviceTypeNetwork,
+									PCIAddr: "0000:3d:00.1",
+								},
+								{
+									Name:    "i40iw0",
+									Type:    hardware.DeviceTypeOpenFabrics,
+									PCIAddr: "0000:3d:00.1",
+								},
+							},
+						},
+					},
+					1: {
+						ID:         1,
+						NumCores:   24,
+						PCIDevices: map[string][]*hardware.Device{},
+					},
+				},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			log, buf := logging.NewTestLogger(name)
+			defer common.ShowBufferOnFailure(t, buf)
 
-// func (m *mockAPI) runtimeVersion() uint {
-// 	return m.runtimeVer
-// }
+			_, err := os.Stat(tc.hwlocXMLFile)
+			common.AssertEqual(t, err, nil, "unable to read hwloc test topology file")
+			os.Setenv("HWLOC_XMLFILE", tc.hwlocXMLFile)
+			defer os.Unsetenv("HWLOC_XMLFILE")
 
-// func (m *mockAPI) compiledVersion() uint {
-// 	return m.compVer
-// }
+			// cmd := exec.Command("hwloc-ls")
+			// cmd.Stdout = os.Stdout
+			// cmd.Run()
 
-// func (m *mockAPI) newTopology() (internalTopology, func(), error) {
-// 	return m.newTopo, m.newTopoCleanup, m.newTopoErr
-// }
+			provider := NewProvider(log)
+			result, err := provider.GetTopology()
+			if err != nil {
+				t.Fatal(err)
+			}
 
-// type mockTopology struct {
-// 	setFlagsErr error
-// 	loadErr     error
-// }
+			if diff := cmp.Diff(tc.expResult, result); diff != "" {
+				t.Errorf("(-want, +got)\n%s\n", diff)
+			}
+		})
 
-// func (m *mockTopology) GetProcessCPUSet(pid int32, flags int) (CPUSet, func(), error) {
-// 	return nil, nil, nil
-// }
-
-// func (m *mockTopology) setFlags() error {
-// 	return m.setFlagsErr
-// }
-
-// func (m *mockTopology) load() error {
-// 	return m.loadErr
-// }
-
-// func (m *mockTopology) GetObjByDepth(depth int, index uint) (Object, error) {
-// 	return nil, nil
-// }
-
-// func (m *mockTopology) GetTypeDepth(objType ObjType) int {
-// 	return 0
-// }
-
-// func (m *mockTopology) GetNumObjAtDepth(depth int) uint {
-// 	return 0
-// }
-
-// func TestHwloc_GetTopology(t *testing.T) {
-// 	var testCleanupCalled uint
-// 	testCleanup := func() {
-// 		testCleanupCalled++
-// 	}
-
-// 	for name, tc := range map[string]struct {
-// 		api                   API
-// 		expTimesLocked        uint
-// 		expTimesCleanupCalled uint
-// 		expTopology           Topology
-// 		expErr                error
-// 	}{
-// 		"nil": {
-// 			expErr: errors.New("nil"),
-// 		},
-// 		"incompatible versions": {
-// 			api: &mockAPI{
-// 				runtimeVer: 0x010000,
-// 				compVer:    0x020000,
-// 			},
-// 			expErr: errors.New("incompatible"),
-// 		},
-// 		"different but compatible versions": {
-// 			api: &mockAPI{
-// 				runtimeVer:     0x0E000,
-// 				compVer:        0x0F000,
-// 				newTopo:        &mockTopology{},
-// 				newTopoCleanup: testCleanup,
-// 			},
-// 			expTimesLocked: 1,
-// 			expTopology:    &mockTopology{},
-// 		},
-// 		"newTopology failed": {
-// 			api: &mockAPI{
-// 				newTopoErr: errors.New("mock newTopology"),
-// 			},
-// 			expTimesLocked: 1,
-// 			expErr:         errors.New("mock newTopology"),
-// 		},
-// 		"SetFlags failed": {
-// 			api: &mockAPI{
-// 				newTopo: &mockTopology{
-// 					setFlagsErr: errors.New("mock SetFlags"),
-// 				},
-// 				newTopoCleanup: testCleanup,
-// 			},
-// 			expTimesCleanupCalled: 1,
-// 			expTimesLocked:        1,
-// 			expErr:                errors.New("mock SetFlags"),
-// 		},
-// 		"Load failed": {
-// 			api: &mockAPI{
-// 				newTopo: &mockTopology{
-// 					loadErr: errors.New("mock Load"),
-// 				},
-// 				newTopoCleanup: testCleanup,
-// 			},
-// 			expTimesCleanupCalled: 1,
-// 			expTimesLocked:        1,
-// 			expErr:                errors.New("mock Load"),
-// 		},
-// 		"success": {
-// 			api: &mockAPI{
-// 				newTopo:        &mockTopology{},
-// 				newTopoCleanup: testCleanup,
-// 			},
-// 			expTimesLocked: 1,
-// 			expTopology:    &mockTopology{},
-// 		},
-// 	} {
-// 		t.Run(name, func(t *testing.T) {
-// 			testCleanupCalled = 0
-
-// 			topo, cleanup, err := GetTopology(tc.api)
-
-// 			common.CmpErr(t, tc.expErr, err)
-// 			if diff := cmp.Diff(topo, tc.expTopology, cmp.AllowUnexported(mockTopology{})); diff != "" {
-// 				t.Fatalf("(-want, +got): %v\n", diff)
-// 			}
-
-// 			if tc.expTopology == nil {
-// 				common.AssertTrue(t, cleanup == nil, "")
-// 			} else {
-// 				common.AssertTrue(t, cleanup != nil, "")
-// 			}
-
-// 			common.AssertEqual(t, tc.expTimesCleanupCalled, testCleanupCalled, "")
-
-// 			if mockAPI, ok := tc.api.(*mockAPI); ok {
-// 				common.AssertEqual(t, tc.expTimesLocked, mockAPI.numCallsLock, "")
-// 				common.AssertEqual(t, tc.expTimesLocked, mockAPI.numCallsUnlock, "")
-// 			}
-// 		})
-// 	}
-// }
+	}
+}

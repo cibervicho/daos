@@ -8,11 +8,21 @@
 package hwloc
 
 import (
+	"fmt"
+
 	"github.com/pkg/errors"
 
 	"github.com/daos-stack/daos/src/control/lib/hardware"
 	"github.com/daos-stack/daos/src/control/logging"
 )
+
+// NewProvider returns a new hwloc Provider.
+func NewProvider(log logging.Logger) hardware.TopologyProvider {
+	return &Provider{
+		api: &api{},
+		log: log,
+	}
+}
 
 type Provider struct {
 	api *api
@@ -38,23 +48,27 @@ func (p *Provider) GetTopology() (*hardware.Topology, error) {
 
 func (p *Provider) getNUMANodes(topo *topology) (map[uint]*hardware.NUMANode, error) {
 	coresByNode := p.getCoreCountsPerNodeSet(topo)
-	devsByNode := p.getDevicesPerNodeSet(topo)
 
 	nodes := make(map[uint]*hardware.NUMANode)
 
 	prevNode := (*object)(nil)
 	for {
-		numaObj, err := topo.GetNextObjByType(ObjTypeNUMANode, prevNode)
+		numaObj, err := topo.getNextObjByType(objTypeNUMANode, prevNode)
 		if err != nil {
 			break
 		}
 
-		nodeStr := numaObj.NodeSet().String()
+		nodeStr := numaObj.nodeSet().String()
+
+		devs, err := p.getPCIDevsForNUMANode(numaObj)
+		if err != nil {
+			return nil, err
+		}
 
 		newNode := &hardware.NUMANode{
-			ID:       numaObj.OSIndex(),
-			NumCores: coresByNode[nodeStr],
-			Devices:  devsByNode[nodeStr],
+			ID:         numaObj.osIndex(),
+			NumCores:   coresByNode[nodeStr],
+			PCIDevices: devs,
 		}
 
 		nodes[newNode.ID] = newNode
@@ -62,12 +76,11 @@ func (p *Provider) getNUMANodes(topo *topology) (map[uint]*hardware.NUMANode, er
 		prevNode = numaObj
 	}
 
-	if len(nodes) == 0 {
-		nodes[0] = &hardware.NUMANode{
-			ID:      0,
-			Devices: devsByNode["unknown"],
-		}
-	}
+	// if len(nodes) == 0 {
+	// 	nodes[0] = &hardware.NUMANode{
+	// 		ID: 0,
+	// 	}
+	// }
 
 	return nodes, nil
 }
@@ -76,12 +89,12 @@ func (p *Provider) getCoreCountsPerNodeSet(topo *topology) map[string]uint {
 	prevCore := (*object)(nil)
 	coresPerNode := make(map[string]uint)
 	for {
-		coreObj, err := topo.GetNextObjByType(ObjTypeCore, prevCore)
+		coreObj, err := topo.getNextObjByType(objTypeCore, prevCore)
 		if err != nil {
 			break
 		}
 
-		coresPerNode[coreObj.NodeSet().String()]++
+		coresPerNode[coreObj.nodeSet().String()]++
 
 		prevCore = coreObj
 	}
@@ -89,148 +102,71 @@ func (p *Provider) getCoreCountsPerNodeSet(topo *topology) map[string]uint {
 	return coresPerNode
 }
 
-func (p *Provider) getDevicesPerNodeSet(topo *topology) map[string]map[string][]*hardware.Device {
-	prevDev := (*object)(nil)
-	devicesPerNode := make(map[string]map[string][]*hardware.Device)
-	for {
-		devObj, err := topo.GetNextObjByType(ObjTypeOSDevice, prevDev)
-		if err != nil {
-			break
-		}
+func (p *Provider) getPCIDevsForNUMANode(numaNode *object) (map[string][]*hardware.Device, error) {
+	pciDevs := make(map[string][]*hardware.Device)
 
-		devType, err := devObj.OSDevType()
+	p.addPCIDevsBelowObj(numaNode, pciDevs)
+
+	return pciDevs, nil
+}
+
+func (p *Provider) addPCIDevsBelowObj(obj *object, pciDevs map[string][]*hardware.Device) {
+	fmt.Printf("num children = %d\n", obj.getNumChildren())
+	for i := uint(0); i < obj.getNumChildren(); i++ {
+		cur, err := obj.getChild(i)
 		if err != nil {
-			p.log.Errorf("failed to fetch OS dev type for object %q", devObj.Name())
+			p.log.Error(err.Error())
 			continue
 		}
 
-		switch devType {
-		case OSDevTypeNetwork:
-		case OSDevTypeOpenFabric:
-			// the only device types we care about for now
-		default:
-			continue
-		}
-
-		key := "unknown"
-		parentNode, err := devObj.GetAncestorByType(ObjTypeNUMANode)
-		if err == nil {
-			key = parentNode.NodeSet().String()
-		}
-
-		if _, found := devicesPerNode[key]; !found {
-			devicesPerNode[key] = make(map[string][]*hardware.Device)
-		}
-
-		devKey := devObj.Name()
-		var pciAddr string
-		pciObj, err := devObj.GetAncestorByType(ObjTypePCIDevice)
-		if err == nil {
-			pciAddr, err = pciObj.PCIAddr()
+		if cur.objType() == objTypePCIDevice {
+			addr, err := cur.pciAddr()
 			if err != nil {
-				p.log.Debugf("unable to get PCI addr for device %q: %s", devObj.Name(), err.Error())
+				panic(err)
 			}
-			devKey = pciAddr
+
+			for j := uint(0); j < cur.getNumChildren(); j++ {
+				dev, err := cur.getChild(j)
+				if err != nil {
+					p.log.Error(err.Error())
+					break
+				}
+
+				if dev.objType() != objTypeOSDevice {
+					p.log.Debugf("skipping object type %d", dev.objType())
+					continue
+				}
+
+				osDevType, err := dev.osDevType()
+				if err != nil {
+					p.log.Error(err.Error())
+					continue
+				}
+				switch osDevType {
+				case osDevTypeNetwork, osDevTypeOpenFabrics:
+					pciDevs[addr] = append(pciDevs[addr], &hardware.Device{
+						Name:    dev.name(),
+						Type:    osDevTypeToHardwareDevType(osDevType),
+						PCIAddr: addr,
+					})
+				}
+			}
 		}
 
-		devicesPerNode[key][devKey] = append(devicesPerNode[key][devKey],
-			&hardware.Device{
-				Name:    devObj.Name(),
-				Type:    osDevTypeToHardwareDevType(devType),
-				PCIAddr: pciAddr,
-			})
-
-		prevDev = devObj
+		p.addPCIDevsBelowObj(cur, pciDevs)
 	}
-
-	return devicesPerNode
 }
 
-func osDevTypeToHardwareDevType(osType int) hardware.DevType {
+func osDevTypeToHardwareDevType(osType int) hardware.DeviceType {
 	switch osType {
-	case OSDevTypeNetwork:
-		return hardware.DevTypeNetwork
-	case OSDevTypeOpenFabric:
-		return hardware.DevTypeOpenFabric
+	case osDevTypeNetwork:
+		return hardware.DeviceTypeNetwork
+	case osDevTypeOpenFabrics:
+		return hardware.DeviceTypeOpenFabrics
 	}
 
-	return hardware.DevTypeUnknown
+	return hardware.DeviceTypeUnknown
 }
-
-// // API is an interface for basic API operations, including synchronizing access.
-// type API interface {
-// 	Lock()
-// 	Unlock()
-
-// 	runtimeVersion() uint
-// 	compiledVersion() uint
-// 	newTopology() (internalTopology, func(), error)
-// }
-
-// type internalTopology interface {
-// 	Topology
-// 	load() error
-// 	setFlags() error
-// }
-
-// type ObjType uint
-
-// // Topology is an interface for an hwloc topology.
-// type Topology interface {
-// 	// GetProcessCPUSet gets a CPUSet associated with a given pid, and returns the CPUSet and its
-// 	// cleanup function, or an error.
-// 	GetProcessCPUSet(pid int32, flags int) (CPUSet, func(), error)
-// 	// GetObjByDepth gets an Object at a given depth and index in the topology.
-// 	GetObjByDepth(depth int, index uint) (Object, error)
-// 	// GetTypeDepth fetches the depth of a given ObjType in the topology.
-// 	GetTypeDepth(objType ObjType) int
-// 	// GetNumObjAtDepth fetches the number of objects located at a given depth in the topology.
-// 	GetNumObjAtDepth(depth int) uint
-// }
-
-// // Object is an interface for an object in a Topology.
-// type Object interface {
-// 	// Name returns the name of the object.
-// 	Name() string
-// 	// LogicalIndex returns the logical index of the object.
-// 	LogicalIndex() uint
-// 	// GetNumSiblings returns the number of siblings this object has in the topology.
-// 	GetNumSiblings() uint
-// 	// GetChild gets the object's child with a given index, or returns an error.
-// 	GetChild(index uint) (Object, error)
-// 	// GetAncestorByType gets the object's ancestor of a given type, or returns an error.
-// 	GetAncestorByType(objType ObjType) (Object, error)
-// 	// GetNonIOAncestor gets the object's non-IO ancestor, if any, or returns an error.
-// 	GetNonIOAncestor() (Object, error)
-// 	// CPUSet gets the CPUSet associated with the object.
-// 	CPUSet() CPUSet
-// 	// NodeSet gets the NodeSet associated with the object.
-// 	NodeSet() NodeSet
-// }
-
-// // CPUSet is an interface for a CPU set.
-// type CPUSet interface {
-// 	String() string
-// 	// Intersects determines if this CPUSet intersects with another one.
-// 	Intersects(CPUSet) bool
-// 	// IsSubsetOf determines if this CPUSet is included completely within another one.
-// 	IsSubsetOf(CPUSet) bool
-// 	// ToNodeSet translates this CPUSet into a NodeSet and returns it with its cleanup function,
-// 	// or returns an error.
-// 	ToNodeSet() (NodeSet, func(), error)
-// }
-
-// // NodeSet is an interface for a node set.
-// type NodeSet interface {
-// 	String() string
-// 	// Intersects determines if this NodeSet intersects with another one.
-// 	Intersects(NodeSet) bool
-// }
-
-// // GetAPI fetches an API reference.
-// func GetAPI() API {
-// 	return &api{}
-// }
 
 // getTopo initializes the hwloc topology and returns it to the caller along with the topology
 // cleanup function.
